@@ -1,0 +1,10 @@
+In order to use this code the robot requiries the use of at least 2 motors to control to driving of
+the robot, and not a requirement, a front steering mechanism which can be replaced by less
+frictionless ball point at the bottom. A lot of power may need to be supplied to have better
+movement
+
+An improvement to the buttons is to include more than one motor for better power to the sample picker.
+
+To start LLM, you need an API key to connect to Grok and take screenshots from the WiFi camera
+and upload it manually, while copying the path to exImg.png. API key not provided as that is a 
+security risk to my partner.
