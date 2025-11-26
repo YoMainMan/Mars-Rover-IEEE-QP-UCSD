@@ -5,6 +5,10 @@ movement
 
 An improvement to the buttons is to include more than one motor for better power to the sample picker.
 
+Controls look like this, different on IOS:
+![Screenshot_20251126_042437_Chrome](https://github.com/user-attachments/assets/6128d17d-de4a-41b6-8f45-68f1f80d2fee)
+
+
 To start LLM, you need an API key to connect to Grok and take screenshots from the WiFi camera
 and upload it manually, while copying the path to exImg.png. API key not provided as that is a 
 security risk to my partner.
