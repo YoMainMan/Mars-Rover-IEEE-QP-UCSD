@@ -1,0 +1,448 @@
+// Libraries 
+#include <WiFi.h>
+#include "esp_http_server.h"
+#include "Arduino.h"
+
+// WiFi credentials
+const char* ssid = "MarsRoverTeam::";
+const char* password = "PickleRickForever";
+
+// Motor and PWM pins
+#define MOTOR_1_PIN_1 45
+#define MOTOR_1_PIN_2 43
+#define MOTOR_2_PIN_1 42
+#define MOTOR_2_PIN_2 41
+#define ENA_PIN 44
+#define ENB_PIN 46
+#define ENAARM_PIN 40
+#define MOTOR1_ARM 39
+#define MOTOR2_ARM 38
+
+// Define constants for joystick control
+const float DEADZONE = 0.3f;
+
+// Boolean to detect motor running
+bool motorsRunning = false;
+bool motorsRunningDown = false;
+
+// Creating static handler for web server
+static httpd_handle_t server = NULL;
+
+// HTML website with virtual joystick and buttons
+const char* INDEX_HTML = R"rawliteral(
+<html>
+<head>
+  // Mars Rover Controls with HTML
+  <title>Mars Rover Robot Control</title>
+  <style>
+    body { font-family: Arial; text-align: center; margin: 0; padding-top: 30px; }
+    #joystick { background: #eee; border: 1px solid #ccc; border-radius: 50%; cursor: grab; }
+  </style>
+</head>
+<body>
+// Web joystick creation for web server
+<h1>Web Joystick for Robot</h1>
+<canvas id="joystick" width="200" height="200"></canvas>
+
+// Up button and down button for sample picker creation for web server
+<div id="buttonContainer">
+  <button id="toggleBtn" style="padding: 40px 50px; font-size: 16px;"> Move Arm Up </button>
+  <button id="toggleDownBtn" style="padding: 40px 50px; font-size: 16px;"> Move Arm Down </button>
+</div>
+
+// Creating deadzone and max distance for joystick
+<script>
+const DEADZONE = 0.3;
+const MAX_DIST = 80;
+const canvas = document.getElementById('joystick');
+const ctx = canvas.getContext('2d');
+
+// Tracking the Y-axis and X-axis of the virtual joystick
+let isDragging = false;
+let centerX = canvas.width/2;
+let centerY = canvas.height/2;
+let currentX = centerX;
+let currentY = centerY;
+let joystickX = 0;
+let joystickY = 0;
+
+// drawing out the joystick on server
+function draw() {
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, MAX_DIST, 0, Math.PI*2);
+  ctx.strokeStyle = '#888';
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(currentX, currentY, 20, 0, Math.PI*2);
+  ctx.fillStyle = '#555';
+  ctx.fill();
+}
+
+// Updating position of x and y based on joystick postion
+function updatePos(x, y) {
+  const rect = canvas.getBoundingClientRect();
+  let dx = x - rect.left - centerX;
+  let dy = y - rect.top - centerY;
+  const dist = Math.min(Math.hypot(dx, dy), MAX_DIST);
+  const angle = Math.atan2(dy, dx);
+  currentX = centerX + dist * Math.cos(angle);
+  currentY = centerY + dist * Math.sin(angle);
+  // normalize to -1..1
+  joystickX = dx / MAX_DIST;
+  joystickY = dy / MAX_DIST;
+  sendControl();
+  draw();
+}
+
+// Sending joystick data to server
+function sendJoystickData(x, y) {
+  // Map x and y from -1..1 to 0..1 (if needed), or just send as is
+  const url = `http://${window.location.hostname}/joystick?x=${x}&y=${y}`;
+
+  fetch(url)
+    .then(response => response.text())
+    .then(data => {
+      console.log('Server response:', data);
+    })
+    .catch(error => {
+      console.error('Error:', error);
+    });
+}
+
+// Listening for mouse input on joystick
+canvas.addEventListener('mousedown', e => { isDragging = true; updatePos(e.clientX, e.clientY); });
+canvas.addEventListener('mouseup', () => { isDragging = false; currentX = centerX; currentY = centerY; joystickX=0; joystickY=0; sendControl(); draw(); });
+canvas.addEventListener('mousemove', e => { if (isDragging) updatePos(e.clientX, e.clientY); });
+
+// Allowing for touch inputs on joystick
+canvas.addEventListener('touchstart', e => {
+  if (e.touches.length > 0) {
+    isDragging = true;
+    updatePos(e.touches[0].clientX, e.touches[0].clientY);
+    e.preventDefault(); // prevent scrolling
+  }
+});
+
+// Looking for touch inputs
+canvas.addEventListener('touchend', e => {
+  isDragging = false;
+  currentX = centerX;
+  currentY = centerY;
+  joystickX = 0;
+  joystickY = 0;
+  sendControl();
+  draw();
+  e.preventDefault();
+});
+
+// Looking for touch outputs
+canvas.addEventListener('touchmove', e => {
+  if (e.touches.length > 0 && isDragging) {
+    updatePos(e.touches[0].clientX, e.touches[0].clientY);
+    e.preventDefault(); // prevent scrolling
+  }
+});
+
+// Creating joystick uri for web server
+function sendControl() {
+  console.log(`Sending x=${joystickX}, y=${joystickY}`);
+  fetch(`/joystick?x=${joystickX}&y=${joystickY}`);
+}
+
+// Creates the button uri for web server
+document.getElementById('toggleBtn').addEventListener('click', () => {
+  fetch('/action?cmd=toggle')
+    .then(response => response.text())
+    .then(data => {
+      console.log('Action response:', data);
+      // Optionally, update button text or status here based on response
+    })
+    .catch(error => console.error('Error:', error));
+});
+
+// Creates second button uri for web server
+document.getElementById('toggleDownBtn').addEventListener('click', () => {
+  fetch('/action2?cmd=toggle')
+    .then(response => response.text())
+    .then(data => {
+      console.log('Action response:', data);
+    })
+    .catch(error => console.error('Error:', error));
+});
+
+// End drawing
+draw();
+</script>
+</body>
+</html>
+)rawliteral";
+
+// Handler for root "/"
+esp_err_t index_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "text/html");
+  return httpd_resp_send(req, INDEX_HTML, strlen(INDEX_HTML));
+}
+
+// Handler for "/joystick"
+esp_err_t joystick_handler(httpd_req_t *req) {
+  char* buf;
+  size_t buf_len = httpd_req_get_url_query_len(req) + 1;
+
+  float x = 0.0f;
+  float y = 0.0f;
+
+  if (buf_len > 1) {
+    buf = (char*)malloc(buf_len);
+
+    // Checks request
+    if (!buf) {
+      httpd_resp_send_500(req);
+      return ESP_FAIL;
+    }
+    if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
+      Serial.println("Received /joystick request");
+      Serial.print("Query: "); Serial.println(buf);
+
+      // parses x and y values
+      char value_str[20];
+      if (httpd_query_key_value(buf, "x", value_str, sizeof(value_str)) == ESP_OK) {
+          x = atof(value_str);
+      }
+      if (httpd_query_key_value(buf, "y", value_str, sizeof(value_str)) == ESP_OK) {
+          y = atof(value_str);
+      }
+
+      // Prints x and y to Serial on ESP-32
+      Serial.print("x: "); Serial.println(x);
+      Serial.print("y: "); Serial.println(y);
+      
+      if (y < -DEADZONE) {
+        // Forward
+        int pwmSpeed = (int)(abs(y) * 255);
+        pwmSpeed = constrain(pwmSpeed, 0, 255);
+
+        digitalWrite(MOTOR_1_PIN_1, HIGH);
+        digitalWrite(MOTOR_1_PIN_2, LOW);
+        digitalWrite(MOTOR_2_PIN_1, HIGH);
+        digitalWrite(MOTOR_2_PIN_2, LOW);
+        analogWrite(ENA_PIN, pwmSpeed);
+        analogWrite(ENB_PIN, pwmSpeed);
+      } else if (y > DEADZONE) {
+        // Backward
+        int pwmSpeed = (int)(abs(y) * 255);
+        pwmSpeed = constrain(pwmSpeed, 0, 255);
+
+        digitalWrite(MOTOR_1_PIN_1, LOW);
+        digitalWrite(MOTOR_1_PIN_2, HIGH);
+        digitalWrite(MOTOR_2_PIN_1, LOW);
+        digitalWrite(MOTOR_2_PIN_2, HIGH);
+        analogWrite(ENA_PIN, pwmSpeed);
+        analogWrite(ENB_PIN, pwmSpeed);
+      } else if (x < -DEADZONE) {
+        // Turn Left
+        int pwmSpeed = (int)(abs(x) * 255);
+        pwmSpeed = constrain(pwmSpeed, 0, 255);
+
+        digitalWrite(MOTOR_1_PIN_1, LOW);
+        digitalWrite(MOTOR_1_PIN_2, HIGH);
+        digitalWrite(MOTOR_2_PIN_1, HIGH);
+        digitalWrite(MOTOR_2_PIN_2, LOW);
+        analogWrite(ENA_PIN, pwmSpeed);
+        analogWrite(ENB_PIN, pwmSpeed);
+      } else if (x > DEADZONE) {
+        // Turn Right
+        int pwmSpeed = (int)(abs(x) * 255);
+        pwmSpeed = constrain(pwmSpeed, 0, 255);
+
+        digitalWrite(MOTOR_1_PIN_1, HIGH);
+        digitalWrite(MOTOR_1_PIN_2, LOW);
+        digitalWrite(MOTOR_2_PIN_1, LOW);
+        digitalWrite(MOTOR_2_PIN_2, HIGH);
+        analogWrite(ENA_PIN, pwmSpeed);
+        analogWrite(ENB_PIN, pwmSpeed);
+      } else {
+        // Stop
+        digitalWrite(MOTOR_1_PIN_1, LOW);
+        digitalWrite(MOTOR_1_PIN_2, LOW);
+        digitalWrite(MOTOR_2_PIN_1, LOW);
+        digitalWrite(MOTOR_2_PIN_2, LOW);
+      }
+    }
+    free(buf);
+  }
+  // Returns commands
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  return httpd_resp_send(req, NULL, 0);
+}
+
+// handler for button sample picker
+esp_err_t button_handler(httpd_req_t *req) {
+  char* buf;
+  size_t buf_len = httpd_req_get_url_query_len(req) + 1;
+  char cmd[20] = {0};
+
+  // Checks request
+  if (buf_len > 1) {
+    buf = (char*)malloc(buf_len);
+    if (!buf) {
+      httpd_resp_send_500(req);
+      return ESP_FAIL;
+    }
+    if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
+      if (httpd_query_key_value(buf, "cmd", cmd, sizeof(cmd)) == ESP_OK) {
+        Serial.print("Received command: "); Serial.println(cmd);
+        if (strcmp(cmd, "toggle") == 0) {
+          // Toggle motor state
+          if (motorsRunning) {
+            // Stop motors
+            digitalWrite(MOTOR1_ARM, LOW);
+            digitalWrite(MOTOR2_ARM, LOW);
+            motorsRunning = false;
+            Serial.println("Arm Up Stopped");
+          } else {
+            // Start motors Backwards
+            int pwmSpeed = 255;
+            digitalWrite(MOTOR1_ARM, HIGH);
+            digitalWrite(MOTOR2_ARM, LOW);
+            analogWrite(ENAARM_PIN, pwmSpeed);
+            motorsRunning = true;
+            Serial.println("Arm Up Moves");
+          }
+        }
+      }
+    }
+    free(buf);
+  }
+  // Returns commands
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  return httpd_resp_send(req, "OK", strlen("OK"));
+}
+
+// Handler for second button for sample picker
+esp_err_t buttonDown_handler(httpd_req_t *req) {
+  char* buf;
+  size_t buf_len = httpd_req_get_url_query_len(req) + 1;
+  char cmd[20] = {0};
+
+  // Checks request
+  if (buf_len > 1) {
+    buf = (char*)malloc(buf_len);
+    if (!buf) {
+      httpd_resp_send_500(req);
+      return ESP_FAIL;
+    }
+    if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
+      if (httpd_query_key_value(buf, "cmd", cmd, sizeof(cmd)) == ESP_OK) {
+        Serial.print("Received command: "); Serial.println(cmd);
+        if (strcmp(cmd, "toggle") == 0) {
+          // Toggle motor state
+          if (motorsRunningDown) {
+            // Stop motors
+            digitalWrite(MOTOR1_ARM, LOW);
+            digitalWrite(MOTOR2_ARM, LOW);
+            motorsRunningDown = false;
+            Serial.println("Arm Down Stopped");
+          } else {
+            // Start motors Forwards
+            int pwmSpeed = 255;
+            digitalWrite(MOTOR1_ARM, LOW);
+            digitalWrite(MOTOR2_ARM, HIGH);
+            analogWrite(ENAARM_PIN, pwmSpeed);
+            motorsRunningDown = true;
+            Serial.println("Arm Down Moves");
+          }
+        }
+      }
+    }
+    free(buf);
+  }
+  // Returns commands
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  return httpd_resp_send(req, "OK", strlen("OK"));
+}
+
+// Creates server
+void startServer() {
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.server_port = 80;
+
+  // Compiles commands for root "/"
+  httpd_uri_t index_uri = {
+    .uri       = "/",
+    .method    = HTTP_GET,
+    .handler   = index_handler,
+    .user_ctx  = NULL
+  };
+
+  // Compiles commands for joystick to send to server
+  httpd_uri_t joystick_uri = {
+    .uri       = "/joystick",
+    .method    = HTTP_GET,
+    .handler   = joystick_handler,
+    .user_ctx  = NULL
+  };
+
+  // Compiles commands for first button to send to server
+  httpd_uri_t button_uri = {
+    .uri       = "/action",
+    .method    = HTTP_GET,
+    .handler   = button_handler,
+    .user_ctx  = NULL
+  };
+
+  // Compiles commands for second button to send to server
+  httpd_uri_t buttonDown_uri = {
+    .uri       = "/action2",
+    .method    = HTTP_GET,
+    .handler   = buttonDown_handler,
+    .user_ctx  = NULL
+  };
+
+  // Sends to server, starts server
+  if (httpd_start(&server, &config) == ESP_OK) {
+    httpd_register_uri_handler(server, &index_uri);
+    httpd_register_uri_handler(server, &joystick_uri);
+    httpd_register_uri_handler(server, &button_uri);
+    httpd_register_uri_handler(server, &buttonDown_uri);
+
+  // Server compilation failed :[
+  } else {
+    Serial.println("Failed to start HTTP server");
+  }
+}
+
+void setup() {
+  // Initialize motor pins
+  pinMode(MOTOR_1_PIN_1, OUTPUT);
+  pinMode(MOTOR_1_PIN_2, OUTPUT);
+  pinMode(MOTOR_2_PIN_1, OUTPUT);
+  pinMode(MOTOR_2_PIN_2, OUTPUT);
+  pinMode(ENA_PIN, OUTPUT);
+  pinMode(ENB_PIN, OUTPUT);
+  pinMode(ENAARM_PIN, OUTPUT);
+  pinMode(MOTOR1_ARM, OUTPUT);
+  pinMode(MOTOR2_ARM, OUTPUT);
+  
+  // Intialize Serial
+  Serial.begin(115200);
+  delay(1000);
+
+  // Wifi server softAP begin
+  WiFi.softAP(ssid, password);
+
+  // Checks for WiFi server connection
+  Serial.println("WiFi connected");
+  
+  // Starts server
+  startServer();
+
+  // Obtians IP Address
+  IPAddress IP = WiFi.softAPIP();
+  Serial.print("IP Address: ");
+  Serial.println(IP);
+}
+
+// Uneeded as all requests are handled server client side using prior code
+void loop() {
+}
