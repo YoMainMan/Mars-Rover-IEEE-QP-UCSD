@@ -9,19 +9,49 @@ def encode_image(image_path):
     return base64.b64encode(image_file.read()).decode('utf-8')
 
 # Path to your image
-image_path = "exImg.png"
+image_path = "" # Enter image path
 
 # Getting the base64 string
 base64_image = encode_image(image_path)
 
-client = Groq(api_key= #Enter Grok API KEY)
+client = Groq(api_key="") # Enter your Groq API key here.
 
 chat_completion = client.chat.completions.create(
     messages=[
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": "What's in the image?"},
+                {
+                    "type": "text",
+                    "text": """You are analyzing images captured by a small autonomous rover navigating the floor of an indoor room.
+
+Your goal is to help the rover detect and describe any objects on the floor that are NOT part of the normal environment.
+The floor should normally be empty except for its surface material (tiles, carpet, dust, markings, screws, or seams).
+Any other visible object — such as toys, pens, cups, tools, balls, paper, wrappers, or other items — must be treated as an ANOMALY.
+These anomalies represent objects that the rover should flag for pickup and later analysis.
+
+For every image, follow these instructions carefully:
+1. Observe the entire scene and identify what is visible on the floor.
+2. List all objects or surfaces that clearly belong to the normal floor environment.
+3. Determine whether any other distinct object appears that does NOT belong to the normal background.
+4. If an anomaly is present, briefly describe what it is and why it looks out of place (e.g., “bright yellow toy on carpet” or “metallic screw on tiles”).
+5. Estimate a confidence level (0.0–1.0) for your anomaly decision.
+6. Provide your analysis **strictly in valid JSON** with the following structure:
+
+{
+  "recognized_objects": ["list of normal floor features you see"],
+  "anomaly_detected": true or false,
+  "anomaly_description": "short explanation of the anomalous object or 'None' if none",
+  "confidence": numerical value between 0.0 and 1.0
+}
+
+Rules:
+- Return only the JSON object—no extra text or commentary.
+- Keep your description short but specific enough for the rover to identify the object.
+- The JSON will be parsed automatically by the rover’s pickup logic.
+
+Now analyze the following image accordingly."""
+                },
                 {
                     "type": "image_url",
                     "image_url": {
